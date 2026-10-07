@@ -128,6 +128,9 @@ class Scheduler:
         task = self._task(name)
         if task.state is not BLOCKED:
             raise ValueError("任务 %s 不在阻塞状态" % name)
+        if task in self.blocked:
+            self.blocked.remove(task)
+        task.wake_at = None
         task.state = READY
         task.level = max(0, task.level - 1)
         self._enqueue_ready(task)
@@ -136,13 +139,13 @@ class Scheduler:
         """推进一步调度，返回本步执行的任务名；空闲时返回 None。"""
         if self.done():
             return None
-        self._age_ready()
         self._release_sleepers()
         task = self._pick_next()
         if task is None:
             if self.blocked:
                 self._advance_to_next_wake()
             return None
+        self._age_ready()
         self._run(task)
         return task.name
 
@@ -207,7 +210,7 @@ class Scheduler:
 
     def _enqueue_ready(self, task):
         """把任务加入其所在层级的就绪队列。"""
-        self.queues[task.level].appendleft(task)
+        self.queues[task.level].append(task)
 
     def _pick_next(self):
         """按层级顺序取出下一个该运行的任务。"""
@@ -258,12 +261,13 @@ class Scheduler:
 
     def _should_demote(self, task):
         """任务是否已经用完当前时间片。"""
-        return task.used > self.quantum
+        return task.used >= self.quantum
 
     def _demote(self, task):
         """把用完时间片的任务降到下一级队列。"""
         if task.level < len(self.queues) - 1:
             task.level += 1
+        task.used = 0
 
     def _finish(self, task):
         """结束任务。"""
@@ -290,6 +294,7 @@ class Scheduler:
             if task.wake_at is not None and task.wake_at <= now:
                 task.wake_at = None
                 task.state = READY
+                task.level = max(0, task.level - 1)
                 self._enqueue_ready(task)
             else:
                 pending.append(task)
@@ -304,6 +309,7 @@ class Scheduler:
         delta = min(targets) - self.clock.now()
         if delta <= 0:
             return
+        self.idle_ticks += delta
         self.clock.advance(delta)
 
     def _age_ready(self):
@@ -320,4 +326,5 @@ class Scheduler:
                     continue
                 queue.remove(task)
                 task.level = level - 1
+                task.wait_ticks = 0
                 self.queues[level - 1].append(task)
